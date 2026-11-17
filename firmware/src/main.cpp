@@ -18,7 +18,7 @@
 #include <math.h>
 #include <NimBLEDevice.h>
 
-#define FW_VERSION "stickbuddy-1.3"
+#define FW_VERSION "stickbuddy-1.4"
 
 static const char *SERVICE_UUID = "6b1e0001-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
 static const char *TX_UUID = "6b1e0002-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
@@ -208,7 +208,8 @@ static const int DOT_CX = 67, DOT_CY = 120, DOT_R = 21;
 
 static void ui_draw_rec()   { lcd_fill_screen(C_BLACK); lcd_fill_circle(DOT_CX, DOT_CY, DOT_R, C_RED); }
 static void ui_draw_think() {
-  lcd_fill_rect(DOT_CX - DOT_R - 3, DOT_CY - DOT_R - 3, DOT_R * 2 + 7, DOT_R * 2 + 7, C_BLACK);
+  // 全屏清屏：局部清屏会漏掉绿勾伸出的像素，留下残影
+  lcd_fill_screen(C_BLACK);
   if (thinkBlinkOn) lcd_fill_circle(DOT_CX, DOT_CY, DOT_R, C_AMBER);
 }
 static void ui_draw_done()  { lcd_fill_screen(C_BLACK); lcd_blob_line(40, 128, 62, 150, 7, C_GREEN); lcd_blob_line(62, 150, 100, 98, 7, C_GREEN); }
@@ -346,13 +347,14 @@ void pollButton(BtnState &b) {
     if (raw) {
       b.pressedAt = now;
       sendLine(String(b.id) + ":1 " + String(now));
-      if (b.pin == PIN_FRONT) ui_apply(UI_REC);
+      // 丢掉按键前滞留的 BLE 状态（如旧绿勾指令），避免覆盖刚画的 REC/THINK
+      if (b.pin == PIN_FRONT) { uiPending = 255; ui_apply(UI_REC); }
     } else {
       uint32_t held = now - b.pressedAt;
       sendLine(String(b.id) + ":0 " + String(now) + " held=" + String(held));
       // anticipate the PC: after release it transcribes -> THINK,
       // then PC overrides with DONE / ERR / IDLE. Clicks get DONE from PC too.
-      if (b.pin == PIN_FRONT) ui_apply(UI_THINK);
+      if (b.pin == PIN_FRONT) { uiPending = 255; ui_apply(UI_THINK); }
     }
   }
 }
