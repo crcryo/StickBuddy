@@ -1,5 +1,7 @@
 # StickBuddy — M5StickS3 一键语音输入
 
+> **English**: StickBuddy turns the [M5Stack](https://m5stack.com/) M5StickS3 into a push-to-talk voice input key for Windows. Hold the front button and speak — on release, your speech is transcribed (Zhipu `glm-asr-2512` ASR) and auto-typed into whatever input box your cursor is in: WeChat, browsers, Word, anything. The device screen shows live status: 🔴 recording → 🟠 transcribing → 🟢 done. Front-button click = Enter; side-button click = focus WorkBuddy; side-button long-press = Esc. Built on a custom ESP32-S3 firmware (NimBLE, ST7789 status UI) + a Windows BLE host app. Chinese instructions below.
+
 把 M5StickS3 变成一个**实体语音输入键**：按住正面键说话，松开后自动转写并打进光标所在的任意输入框（微信、浏览器、Word、WorkBuddy……全都能用）。
 
 设备屏幕实时显示任务状态：
