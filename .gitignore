@@ -1,0 +1,8 @@
+__pycache__/
+*.log
+crash.log
+config.json
+.pio/
+dist/
+build/
+*.spec
