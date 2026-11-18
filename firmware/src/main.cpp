@@ -19,7 +19,7 @@
 #include <NimBLEDevice.h>
 #include "font24.h"
 
-#define FW_VERSION "stickbuddy-1.5"
+#define FW_VERSION "stickbuddy-1.6"
 
 static const char *SERVICE_UUID = "6b1e0001-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
 static const char *TX_UUID = "6b1e0002-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
@@ -47,6 +47,7 @@ static const uint32_t DEBOUNCE_MS = 25;
 #define C_AMBER 0xFD20
 #define C_GREEN 0x07E0
 #define C_BLUE  0x001F
+#define C_WHITE 0xFFFF
 
 // ---------- M5PM1 registers (ref: Blockstream Jade m5pm1 driver) ----------
 #define PM1_ADDR           0x6E
@@ -208,7 +209,7 @@ static void lcd_init() {
 }
 
 // ===================== UI state machine (text based) =====================
-enum UiState : uint8_t { UI_OFF = 0, UI_REC, UI_THINK, UI_DONE, UI_ERR, UI_WB_BUSY, UI_WB_DONE, UI_HELLO };
+enum UiState : uint8_t { UI_OFF = 0, UI_REC, UI_THINK, UI_DONE, UI_ERR, UI_WB_BUSY, UI_WB_DONE, UI_HELLO, UI_BOOT };
 
 static volatile uint8_t uiPending = 255;   // 255 = nothing pending (set from BLE thread)
 static uint8_t  uiState  = 255;            // force first paint
@@ -275,6 +276,7 @@ static void ui_apply(uint8_t st) {
     case UI_WB_BUSY: ui_show("处理中", C_BLUE, 600000); break;    // WorkBuddy 任务，10 分钟看门狗
     case UI_WB_DONE: ui_show("任务完成", C_GREEN, 2500); break;
     case UI_HELLO:   ui_show("已连接", C_GREEN, 1500); break;
+    case UI_BOOT:    ui_show("语音键", C_WHITE, 2500); break;   // 开机标识，2.5 秒后熄屏
   }
 }
 
@@ -394,6 +396,7 @@ void setup() {
   Serial.printf("\n[boot] %s\n", FW_VERSION);
   pm1_init();
   lcd_init();
+  ui_apply(UI_BOOT);   // 开机先显示「语音键」，便于确认已进入 StickBuddy
   setupBle();
 }
 
