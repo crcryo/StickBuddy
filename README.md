@@ -19,6 +19,17 @@
 > `echo done > D://Tools//StickBuddy//wb_status.txt`
 > PC 端只在确实有进行中任务时才响应，空闲时自动忽略。
 
+## 和 M5Launcher 一起用（多固件共存）
+
+如果设备上装了 [M5Launcher](https://github.com/bmorcelli/Launcher)（可以同时装多个 app、开机选着用），**不要刷 merged 整片镜像**，改用 app-only 固件：
+
+1. 下载 Release 里的 `stickbuddy-app.bin`
+2. 用 Launcher 的 **WebUI**（设备菜单 WUI → 浏览器打开设备 IP → 上传 .bin）或 **SD 卡** 安装
+3. 安装后在 Launcher 菜单里选 `StickBuddy`
+
+> 开机进入 Launcher 的方法：先真正关机（断电）再开机，屏幕亮起后立刻**短按正面键**，就能停在菜单；不按则自动进入上次用的 app。
+> StickS3 按键：正面短按=下一个，正面长按=选中；侧面短按=上一个，侧面长按=返回。
+
 ## 按键功能
 
 | 按键 | 操作 | 功能 |
