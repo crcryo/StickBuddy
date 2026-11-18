@@ -17,8 +17,9 @@
 #include <SPI.h>
 #include <math.h>
 #include <NimBLEDevice.h>
+#include "font24.h"
 
-#define FW_VERSION "stickbuddy-1.4"
+#define FW_VERSION "stickbuddy-1.5"
 
 static const char *SERVICE_UUID = "6b1e0001-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
 static const char *TX_UUID = "6b1e0002-5f2a-4c8e-9d3b-1a2b3c4d5e6f";
@@ -45,6 +46,7 @@ static const uint32_t DEBOUNCE_MS = 25;
 #define C_RED   0xF800
 #define C_AMBER 0xFD20
 #define C_GREEN 0x07E0
+#define C_BLUE  0x001F
 
 // ---------- M5PM1 registers (ref: Blockstream Jade m5pm1 driver) ----------
 #define PM1_ADDR           0x6E
@@ -143,6 +145,15 @@ static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16
 
 static void lcd_fill_screen(uint16_t color) { lcd_fill_rect(0, 0, LCD_W, LCD_H, color); }
 
+// 逐行直接写入任意像素颜色（文字渲染用），内部做字节交换
+static void lcd_blit_line(uint16_t x, uint16_t y, uint16_t w, const uint16_t *px) {
+  lcd_window(x, y, w, 1);
+  for (uint16_t i = 0; i < w; i++) g_linebuf[i] = __builtin_bswap16(px[i]);
+  lcd_cs(false); lcd_dc(true);
+  SPI.writeBytes((uint8_t *)g_linebuf, w * 2);
+  lcd_cs(true);
+}
+
 static void lcd_fill_circle(int cx, int cy, int r, uint16_t color) {
   for (int dy = -r; dy <= r; dy++) {
     int hw = (int)sqrtf((float)(r * r - dy * dy));
@@ -196,50 +207,74 @@ static void lcd_init() {
   Serial.println("[lcd] init done");
 }
 
-// ===================== UI state machine =====================
-enum UiState : uint8_t { UI_OFF = 0, UI_REC, UI_THINK, UI_DONE, UI_ERR };
+// ===================== UI state machine (text based) =====================
+enum UiState : uint8_t { UI_OFF = 0, UI_REC, UI_THINK, UI_DONE, UI_ERR, UI_WB_BUSY, UI_WB_DONE, UI_HELLO };
 
 static volatile uint8_t uiPending = 255;   // 255 = nothing pending (set from BLE thread)
 static uint8_t  uiState  = 255;            // force first paint
 static uint32_t uiDeadline = 0;            // transient state auto-revert time
-static uint32_t uiAnimAt   = 0;
-static bool     thinkBlinkOn = false;
-static const int DOT_CX = 67, DOT_CY = 120, DOT_R = 21;
+static uint16_t g_textline[LCD_W];
 
-static void ui_draw_rec()   { lcd_fill_screen(C_BLACK); lcd_fill_circle(DOT_CX, DOT_CY, DOT_R, C_RED); }
-static void ui_draw_think() {
-  // 全屏清屏：局部清屏会漏掉绿勾伸出的像素，留下残影
-  lcd_fill_screen(C_BLACK);
-  if (thinkBlinkOn) lcd_fill_circle(DOT_CX, DOT_CY, DOT_R, C_AMBER);
+// ---- 24x24 点阵文字（中文自造字模，不依赖字体库） ----
+static const uint8_t *glyph_of(uint16_t cp) {
+  for (int i = 0; i < GLYPH_N; i++)
+    if (GLYPHS[i].cp == cp) return GLYPHS[i].bits;
+  return nullptr;
 }
-static void ui_draw_done()  { lcd_fill_screen(C_BLACK); lcd_blob_line(40, 128, 62, 150, 7, C_GREEN); lcd_blob_line(62, 150, 100, 98, 7, C_GREEN); }
-static void ui_draw_err()   { lcd_fill_screen(C_BLACK); lcd_blob_line(45, 98, 92, 145, 7, C_RED);  lcd_blob_line(92, 98, 45, 145, 7, C_RED); }
+
+static int utf8_decode(const char *s, uint16_t *cp) {
+  const uint8_t *p = (const uint8_t *)s;
+  if (p[0] < 0x80)               { *cp = p[0]; return 1; }
+  if ((p[0] & 0xE0) == 0xC0)     { *cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); return 2; }
+  if ((p[0] & 0xF0) == 0xE0)     { *cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); return 3; }
+  *cp = '?'; return 1;
+}
+
+static void ui_draw_text(const char *txt, uint16_t color) {
+  const uint8_t *gs[8];
+  int gn = 0, i = 0;
+  uint16_t cp;
+  while (txt[i] && gn < 8) {
+    i += utf8_decode(txt + i, &cp);
+    gs[gn++] = glyph_of(cp);
+  }
+  int x0 = (LCD_W - gn * 24) / 2;
+  int y0 = (LCD_H - 24) / 2;
+  for (int r = 0; r < 24; r++) {
+    for (int x = 0; x < LCD_W; x++) g_textline[x] = C_BLACK;
+    for (int k = 0; k < gn; k++) {
+      const uint8_t *g = gs[k];
+      if (!g) continue;
+      for (int c = 0; c < 24; c++) {
+        if (g[r * 3 + c / 8] & (0x80 >> (c % 8))) {
+          int xx = x0 + k * 24 + c;
+          if (xx >= 0 && xx < LCD_W) g_textline[xx] = color;
+        }
+      }
+    }
+    lcd_blit_line(0, y0 + r, LCD_W, g_textline);
+  }
+}
+
+static void ui_show(const char *txt, uint16_t color, uint32_t ms) {
+  backlight(true);
+  lcd_fill_screen(C_BLACK);
+  ui_draw_text(txt, color);
+  uiDeadline = ms ? millis() + ms : 0;
+}
 
 static void ui_apply(uint8_t st) {
-  if (uiState == st && st != UI_THINK) return;   // THINK re-entry just extends the deadline
+  if (uiState == st) return;
   uiState = st;
-  uint32_t now = millis();
   switch (st) {
-    case UI_OFF:
-      backlight(false);
-      break;
-    case UI_REC:
-      backlight(true); ui_draw_rec();
-      uiDeadline = 0;
-      break;
-    case UI_THINK:
-      backlight(true);
-      uiDeadline = now + 30000;   // safety watchdog: if PC dies, screen turns off
-      uiAnimAt = 0;
-      break;
-    case UI_DONE:
-      backlight(true); ui_draw_done();
-      uiDeadline = now + 1200;
-      break;
-    case UI_ERR:
-      backlight(true); ui_draw_err();
-      uiDeadline = now + 1200;
-      break;
+    case UI_OFF:     backlight(false); break;
+    case UI_REC:     ui_show("录音中", C_RED, 0); break;
+    case UI_THINK:   ui_show("转写中", C_AMBER, 30000); break;    // PC 挂了也不会一直亮
+    case UI_DONE:    ui_show("已完成", C_GREEN, 1500); break;
+    case UI_ERR:     ui_show("出错", C_RED, 1500); break;
+    case UI_WB_BUSY: ui_show("处理中", C_BLUE, 600000); break;    // WorkBuddy 任务，10 分钟看门狗
+    case UI_WB_DONE: ui_show("任务完成", C_GREEN, 2500); break;
+    case UI_HELLO:   ui_show("已连接", C_GREEN, 1500); break;
   }
 }
 
@@ -249,17 +284,7 @@ static void ui_loop() {
     uiPending = 255;
     ui_apply(pend);
   }
-  uint32_t now = millis();
-  if (uiState == UI_THINK) {
-    if (now >= uiAnimAt) {
-      thinkBlinkOn = !thinkBlinkOn;
-      uiAnimAt = now + 350;
-      ui_draw_think();
-    }
-    if (now > uiDeadline) ui_apply(UI_OFF);
-  } else if ((uiState == UI_DONE || uiState == UI_ERR) && now > uiDeadline) {
-    ui_apply(UI_OFF);
-  }
+  if (uiDeadline && millis() > uiDeadline) ui_apply(UI_OFF);
 }
 
 // ===================== BLE =====================
@@ -288,7 +313,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     Serial.println("[ble] host connected");
     delay(30);
     sendLine(String("HELLO ") + FW_VERSION);
-    uiPending = UI_DONE;   // greet on screen: green tick when PC connects
+    uiPending = UI_HELLO;   // 连接上时屏幕显示「已连接」
   }
   void onDisconnect(NimBLEServer *pServer) override {
     bleConnected = false;
@@ -304,12 +329,14 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
     cmd.trim();
     Serial.printf("[rx] %s\n", cmd.c_str());
     // NOTE: runs in BLE stack thread - only set the pending flag, never draw here.
-    if      (cmd == "ST:REC")   uiPending = UI_REC;
-    else if (cmd == "ST:THINK") uiPending = UI_THINK;
-    else if (cmd == "ST:DONE")  uiPending = UI_DONE;
-    else if (cmd == "ST:ERR")   uiPending = UI_ERR;
-    else if (cmd == "ST:IDLE")  uiPending = UI_OFF;
-    else if (cmd == "PING")     sendLine("PONG");
+    if      (cmd == "ST:REC")    uiPending = UI_REC;
+    else if (cmd == "ST:THINK")  uiPending = UI_THINK;
+    else if (cmd == "ST:DONE")   uiPending = UI_DONE;
+    else if (cmd == "ST:ERR")    uiPending = UI_ERR;
+    else if (cmd == "ST:IDLE")   uiPending = UI_OFF;
+    else if (cmd == "ST:WBBUSY") uiPending = UI_WB_BUSY;
+    else if (cmd == "ST:WBDONE") uiPending = UI_WB_DONE;
+    else if (cmd == "PING")      sendLine("PONG");
   }
 };
 
